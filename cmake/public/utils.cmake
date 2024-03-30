@@ -438,7 +438,6 @@ function(torch_compile_options libname)
       -Wdeprecated
       -Wno-unused-parameter
       -Wno-unused-function
-      -Wno-unused-result
       -Wno-missing-field-initializers
       -Wno-unknown-pragmas
       -Wno-type-limits
@@ -446,9 +445,6 @@ function(torch_compile_options libname)
       -Wno-unknown-pragmas
       -Wno-strict-overflow
       -Wno-strict-aliasing
-      # Clang has an unfixed bug leading to spurious missing braces
-      # warnings, see https://bugs.llvm.org/show_bug.cgi?id=21629
-      -Wno-missing-braces
       )
     if(NOT "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
       list(APPEND private_compile_options
@@ -530,6 +526,8 @@ function(torch_update_find_cuda_flags)
                     "    CUDA_NVCC_FLAGS_MINSIZEREL     = ${FLAGS_MINSIZEREL}")
   endif()
 endfunction()
+
+include(CheckCXXCompilerFlag)
 
 ##############################################################################
 # CHeck if given flag is supported and append it to provided outputvar

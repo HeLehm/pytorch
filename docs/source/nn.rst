@@ -103,6 +103,7 @@ Pooling layers
     nn.FractionalMaxPool3d
     nn.LPPool1d
     nn.LPPool2d
+    nn.LPPool3d
     nn.AdaptiveMaxPool1d
     nn.AdaptiveMaxPool2d
     nn.AdaptiveMaxPool3d
@@ -130,6 +131,9 @@ Padding Layers
     nn.ConstantPad1d
     nn.ConstantPad2d
     nn.ConstantPad3d
+    nn.CircularPad1d
+    nn.CircularPad2d
+    nn.CircularPad3d
 
 Non-linear Activations (weighted sum, nonlinearity)
 ---------------------------------------------------
@@ -203,6 +207,7 @@ Normalization Layers
     nn.LazyInstanceNorm3d
     nn.LayerNorm
     nn.LocalResponseNorm
+    nn.RMSNorm
 
 Recurrent Layers
 ----------------
@@ -355,7 +360,9 @@ Utilities
 ---------
 .. automodule:: torch.nn.utils
 
-From the ``torch.nn.utils`` module
+From the ``torch.nn.utils`` module:
+
+Utility functions to clip parameter gradients.
 
 .. currentmodule:: torch.nn.utils
 .. autosummary::
@@ -363,15 +370,64 @@ From the ``torch.nn.utils`` module
     :nosignatures:
 
     clip_grad_norm_
+    clip_grad_norm
     clip_grad_value_
-    parameters_to_vector
-    vector_to_parameters
-    prune.BasePruningMethod
+
+Utility functions to flatten and unflatten Module parameters to and from a single vector.
 
 .. autosummary::
     :toctree: generated
     :nosignatures:
 
+    parameters_to_vector
+    vector_to_parameters
+
+Utility functions to fuse Modules with BatchNorm modules.
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    fuse_conv_bn_eval
+    fuse_conv_bn_weights
+    fuse_linear_bn_eval
+    fuse_linear_bn_weights
+
+Utility functions to convert Module parameter memory formats.
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    convert_conv2d_weight_memory_format
+    convert_conv3d_weight_memory_format
+
+Utility functions to apply and remove weight normalization from Module parameters.
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    weight_norm
+    remove_weight_norm
+    spectral_norm
+    remove_spectral_norm
+
+Utility functions for initializing Module parameters.
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    skip_init
+
+Utility classes and functions for pruning Module parameters.
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    prune.BasePruningMethod
     prune.PruningContainer
     prune.Identity
     prune.RandomUnstructured
@@ -388,11 +444,6 @@ From the ``torch.nn.utils`` module
     prune.custom_from_mask
     prune.remove
     prune.is_pruned
-    weight_norm
-    remove_weight_norm
-    spectral_norm
-    remove_spectral_norm
-    skip_init
 
 Parametrizations implemented using the new parametrization functionality
 in :func:`torch.nn.utils.parameterize.register_parametrization`.
@@ -402,6 +453,7 @@ in :func:`torch.nn.utils.parameterize.register_parametrization`.
     :nosignatures:
 
     parametrizations.orthogonal
+    parametrizations.weight_norm
     parametrizations.spectral_norm
 
 Utility functions to parametrize Tensors on existing Modules.
@@ -428,7 +480,7 @@ for more information on how to implement your own parametrizations.
 
     parametrize.ParametrizationList
 
-Utility functions to calls a given Module in a stateless manner.
+Utility functions to call a given Module in a stateless manner.
 
 .. autosummary::
     :toctree: generated
@@ -476,6 +528,18 @@ Lazy Modules Initialization
 
     nn.modules.lazy.LazyModuleMixin
 
+Aliases
+_______
+
+The following are aliases to their counterparts in ``torch.nn``:
+
+.. currentmodule:: torch
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+    :template: classtemplate.rst
+
+    nn.modules.normalization.RMSNorm
 
 .. This module needs to be documented. Adding here in the meantime
 .. for tracking purposes

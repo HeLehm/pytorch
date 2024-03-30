@@ -3049,7 +3049,7 @@ TEST(TestFunctionExecutor, RunDecompositionTest) {
 TEST(TestShapeGraphLinting, Basic) {
   auto schemas = RegisteredShapeComputeSchemas();
   for (const auto& schema : schemas) {
-    // arange does not acually support complex, leave as
+    // arange does not actually support complex, leave as
     // union[int, float] for now
     if (schema->name() == "aten::arange") {
       continue;
@@ -3134,6 +3134,7 @@ TEST_F(Composed, ComposedOp) {
 }
 
 TEST(ConstantPropagation, CustomClassesCanBePropagated) {
+#ifdef USE_QNNPACK
   const auto src = R"IR(
     graph():
         %none: NoneType = prim::Constant()
@@ -3154,6 +3155,7 @@ TEST(ConstantPropagation, CustomClassesCanBePropagated) {
   ConstantPropagation(graph);
 
   testing::FileCheck().check_not("quantized::linear_prepack")->run(*graph);
+#endif
 }
 
 } // namespace jit

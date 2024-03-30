@@ -10,6 +10,7 @@
 #include <cuda_runtime_api.h>
 #include <stdint.h>
 #include <deque>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -300,6 +301,10 @@ class CUDAHostAllocator {
     }
   }
 
+  void copy_data(void* dest, const void* src, std::size_t count) const {
+    TORCH_CHECK_NOT_IMPLEMENTED(false, "Not implemented for CUDAHostAllocator");
+  }
+
  private:
   void process_events() {
     while (true) {
@@ -397,7 +402,7 @@ class CUDAHostAllocator {
         (void*)devptr == (void*)ptr,
         "Host and device pointer dont match with cudaHostRegister. "
         "Please dont use this feature by setting "
-        "PYTORCH_PINNED_ALLOC_CONF=use_cuda_host_register:False (default)",
+        "PYTORCH_CUDA_ALLOC_CONF=use_cuda_host_register:False (default)",
         "");
   }
 
@@ -412,18 +417,31 @@ class CUDAHostAllocator {
     size_t numMapThreads = c10::cuda::CUDACachingAllocator::
         CUDAAllocatorConfig::pinned_num_register_threads();
     if ((numMapThreads > 1) && (roundSize >= (pageSize * numMapThreads))) {
+      // parallelize the mapping of pages with a threadpool
       auto* pool = getThreadPool();
+      std::vector<std::promise<void>> promises;
+      std::vector<std::future<void>> futures;
+      promises.reserve(numMapThreads);
+      futures.reserve(numMapThreads);
+
       for (size_t i = 0; i < numMapThreads; i++) {
-        pool->run(std::bind(
-            &CUDAHostAllocator::mapPagesForRegister,
-            this,
+        promises.emplace_back();
+        futures.push_back(promises[i].get_future());
+        auto task = [this, i, ptr, roundSize, numMapThreads, pageSize, &promises]() mutable {
+          mapPagesForRegister(
             *ptr,
             roundSize,
             i, // thread task-id
             numMapThreads,
-            pageSize));
+            pageSize);
+          // set the promise when mapping pages are done
+          promises[i].set_value();
+        };
+        pool->run(task);
       }
-      pool->waitWorkComplete();
+      for (auto& future : futures) {
+        future.wait();
+      }
     } else {
       // Map pages in the same thread
       mapPagesForRegister(*ptr, roundSize, 0, 1, pageSize);
@@ -474,13 +492,17 @@ void CachingHostAllocator_emptyCache() {
 }
 
 struct CUDAHostAllocatorWrapper final : public at::Allocator {
-  at::DataPtr allocate(size_t size) const override {
+  at::DataPtr allocate(size_t size) override {
     auto ptr_and_ctx = getCUDAHostAllocator().allocate(size);
     return {
         ptr_and_ctx.first,
         ptr_and_ctx.second,
         &CUDAHostAllocatorDeleter,
         at::DeviceType::CPU};
+  }
+
+  void copy_data(void* dest, const void* src, std::size_t count) const final {
+    getCUDAHostAllocator().copy_data(dest, src, count);
   }
 };
 

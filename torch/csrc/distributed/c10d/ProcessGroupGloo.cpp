@@ -56,6 +56,9 @@
     case ::at::ScalarType::Half:                 \
       func<gloo::float16>(__VA_ARGS__);          \
       break;                                     \
+    case ::at::ScalarType::BFloat16:             \
+      func<c10::BFloat16>(__VA_ARGS__);          \
+      break;                                     \
     case ::at::ScalarType::Char:                 \
       func<int8_t>(__VA_ARGS__);                 \
       break;                                     \
@@ -85,6 +88,9 @@
       break;                                     \
     case ::at::ScalarType::Half:                 \
       func<gloo::float16>(args);                 \
+      break;                                     \
+    case ::at::ScalarType::BFloat16:             \
+      func<c10::BFloat16>(args);                 \
       break;                                     \
     case ::at::ScalarType::Char:                 \
       func<int8_t>(args);                        \
@@ -1541,6 +1547,15 @@ c10::intrusive_ptr<Work> ProcessGroupGloo::allreduce(
   return work;
 }
 
+c10::intrusive_ptr<Work> ProcessGroupGloo::allreduce_sparse(
+    std::vector<at::Tensor>& inputs,
+    const AllreduceOptions& opts) {
+  // all reduce sparse calls into default allreduce which
+  // implemented with all_gathering indices and values
+  // we do ths we do not have a native cuda implementation
+  return allreduce(inputs, opts);
+}
+
 c10::intrusive_ptr<Work> ProcessGroupGloo::allreduce_coalesced(
     std::vector<at::Tensor>& tensors,
     const AllreduceCoalescedOptions& opts) {
@@ -1908,8 +1923,79 @@ class AsyncAllgatherCUDAWork : public AsyncAllgatherWork {
   std::vector<c10::Event> outputEvents;
 };
 
+// A work that takes an lambda on construction and calls it on wait.
+// It is useful for add a continuation to another work, and/or
+// composing multiple works together.
+class LambdaWork : public Work {
+ public:
+  LambdaWork(std::function<void(void)> fn) : fn_(fn) {}
+
+  bool wait(std::chrono::milliseconds /* unused */) override {
+    fn_();
+    return true;
+  }
+
+ private:
+  std::function<void(void)> fn_;
+};
+
 } // namespace
 
+c10::intrusive_ptr<Work> ProcessGroupGloo::_reduce_scatter_base(
+    at::Tensor& outputTensor,
+    at::Tensor& inputTensor,
+    const ReduceScatterOptions& opts) {
+  std::vector<at::Tensor> outputTensors = {outputTensor};
+  std::vector<at::Tensor> inputTensors = {inputTensor};
+  return reduce_scatter_tensor_coalesced(outputTensors, inputTensors, opts);
+}
+
+c10::intrusive_ptr<Work> ProcessGroupGloo::reduce_scatter_tensor_coalesced(
+    std::vector<at::Tensor>& outputTensors,
+    std::vector<at::Tensor>& inputTensors,
+    const ReduceScatterOptions& opts) {
+  if (outputTensors.size() != inputTensors.size()) {
+    TORCH_CHECK(
+        false, "requires input/output tensor lists to have the same length");
+  }
+  const auto rank = getRank();
+  const auto worldSize = getSize();
+  std::vector<at::Tensor> buffers;
+  for (const auto i : c10::irange(inputTensors.size())) {
+    auto inputShape = inputTensors[i].sizes().vec();
+    auto outputShape = outputTensors[i].sizes().vec();
+    TORCH_CHECK_EQ(outputTensors[i].dtype(), inputTensors[i].dtype());
+    TORCH_CHECK_EQ(outputShape[0] * worldSize, inputShape[0]);
+    for (size_t i = 1; i < outputShape.size(); ++i) {
+      TORCH_CHECK_EQ(outputShape[i], inputShape[i]);
+    }
+    buffers.push_back(inputTensors[i].clone());
+  }
+  std::vector<c10::intrusive_ptr<Work>> works;
+  for (const auto i : c10::irange(buffers.size())) {
+    std::vector<at::Tensor> inp = {buffers[i]};
+    AllreduceOptions arOpts;
+    arOpts.reduceOp = opts.reduceOp;
+    works.push_back(allreduce(inp));
+  }
+  return c10::make_intrusive<LambdaWork>(
+      [rank, worldSize, buffers, outputTensors, works = std::move(works)]() {
+        for (const auto i : c10::irange(outputTensors.size())) {
+          works[i]->wait();
+          outputTensors[i].copy_(buffers[i].chunk(worldSize)[rank]);
+        }
+      });
+}
+
+c10::intrusive_ptr<Work> ProcessGroupGloo::_allgather_base(
+    at::Tensor& output_tensor,
+    at::Tensor& input_tensor,
+    const AllgatherOptions& opts) {
+  auto tensor_list = at::chunk(output_tensor, this->getSize(), 0);
+  std::vector<std::vector<at::Tensor>> outputs = {tensor_list};
+  std::vector<at::Tensor> inputs = {input_tensor};
+  return this->allgather(outputs, inputs, opts);
+}
 // Note: current CUDA implementation holds the assumption that the
 // tensors in the nested output tensor vectors are on the same device.
 c10::intrusive_ptr<Work> ProcessGroupGloo::allgather(
@@ -2106,11 +2192,19 @@ c10::intrusive_ptr<Work> ProcessGroupGloo::allgather_coalesced(
   return work;
 }
 
-c10::intrusive_ptr<Work> ProcessGroupGloo::_allgather_base(
-    at::Tensor& /*unused */,
-    at::Tensor& /*unused */,
-    const AllgatherOptions& /*unused */) {
-  TORCH_CHECK(false, "no support for _allgather_base in Gloo process group");
+c10::intrusive_ptr<Work> ProcessGroupGloo::allgather_into_tensor_coalesced(
+    std::vector<at::Tensor>& outputs,
+    std::vector<at::Tensor>& inputs,
+    const AllgatherOptions& opts) {
+  TORCH_CHECK_EQ(outputs.size(), inputs.size());
+  std::vector<std::vector<at::Tensor>> output_lists(getSize());
+  for (auto& output : outputs) {
+    auto chunks = output.chunk(getSize());
+    for (const auto i : c10::irange(output_lists.size())) {
+      output_lists[i].push_back(std::move(chunks[i]));
+    }
+  }
+  return allgather_coalesced(output_lists, inputs, opts);
 }
 
 namespace {

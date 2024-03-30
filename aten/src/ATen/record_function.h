@@ -7,7 +7,6 @@
 #include <c10/util/SmallVector.h>
 
 #include <array>
-#include <atomic>
 #include <functional>
 #include <memory>
 #include <variant>
@@ -17,6 +16,9 @@ class TORCH_API OperatorHandle;
 }
 
 namespace at {
+
+// Function name to record NCCL metadata
+extern TORCH_API const std::string kParamCommsCallName;
 
 // Kind of record function scope;
 enum class C10_API_ENUM RecordScope : uint8_t {
@@ -94,7 +96,7 @@ struct ObserverContext {
   virtual ~ObserverContext() = default;
 
  protected:
-  ObserverContext() {}
+  ObserverContext() = default;
 };
 
 typedef c10::SmallVector<uint64_t, kSoftLimitCallbacks> CallbackHandles;
@@ -241,7 +243,7 @@ constexpr CallbackHandle INVALID_CALLBACK_HANDLE{0};
 // thread-local function callbacks. Moreover, it prevents saving to
 // ThreadLocalState because std::atomic is non-copyable.
 struct RecordFunctionCallbacksEntry {
-  RecordFunctionCallbacksEntry(RecordFunctionCallback&& cb, CallbackHandle h)
+  RecordFunctionCallbacksEntry(RecordFunctionCallback cb, CallbackHandle h)
       : callback_(cb), handle_(h) {}
 
   RecordFunctionCallback callback_;
@@ -392,8 +394,14 @@ struct TORCH_API RecordFunction {
   // profiling.
   void _setAsync();
 
-  // Returns whether this RecordFunction corresponds to an async event orn ot.
+  // Returns whether this RecordFunction corresponds to an async event or not.
   bool isAsync() const;
+
+  // Returns whether this RecordFunction corresponds to NCCL metadata collection
+  // or not.
+  bool isNcclMeta() const {
+    return is_nccl_meta_;
+  }
 
   // Internal-only, used to denote out variant used for Static Runtime execution
   void _setStaticRuntimeOutVariant();
@@ -483,6 +491,9 @@ struct TORCH_API RecordFunction {
   // Whether this RecordFunction is used for an out variant run with
   // Static Runtime
   bool is_static_runtime_out_variant_{false};
+
+  // Whether this RecordFunction is used for NCCL metadata collection
+  bool is_nccl_meta_{false};
 };
 
 TORCH_API StepCallbacks getStepCallbacks(RecordScope scope);

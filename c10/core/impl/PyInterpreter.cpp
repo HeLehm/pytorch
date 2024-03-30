@@ -2,8 +2,7 @@
 #include <c10/core/TensorImpl.h>
 #include <c10/core/impl/PyInterpreter.h>
 
-namespace c10 {
-namespace impl {
+namespace c10::impl {
 
 struct NoopPyInterpreterVTable final : public PyInterpreterVTable {
   std::string name() const override {
@@ -81,6 +80,9 @@ struct NoopPyInterpreterVTable final : public PyInterpreterVTable {
   c10::Layout layout(const TensorImpl* self) const override {
     PANIC(layout);
   }
+  int64_t numel(const TensorImpl* self) const override {
+    PANIC(numel);
+  }
   c10::SymInt sym_numel(const TensorImpl* self) const override {
     PANIC(sym_numel);
   }
@@ -122,5 +124,4 @@ void PyInterpreter::disarm() noexcept {
   vtable_ = &noop_vtable;
 }
 
-} // namespace impl
-} // namespace c10
+} // namespace c10::impl

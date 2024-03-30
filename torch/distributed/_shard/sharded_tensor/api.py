@@ -44,7 +44,8 @@ from .utils import (
     build_global_metadata
 )
 from torch.distributed.remote_device import _remote_device
-from torch.utils._pytree import tree_map
+from torch.utils import _pytree as pytree
+import operator
 
 # Tracking for sharded tensor objects.
 _sharded_tensor_lock = threading.Lock()
@@ -210,7 +211,7 @@ class ShardedTensor(ShardedTensorBase):
 
     Keyword args:
         dtype (:class:`torch.dtype`, optional): the desired data type of returned tensor.
-                Default: if ``None``, uses a global default (see :func:`torch.set_default_tensor_type`).
+                Default: if ``None``, uses a global default (see :func:`torch.set_default_dtype`).
         layout (:class:`torch.layout`, optional): the desired layout of returned Tensor.
             Default: ``torch.strided``.
         requires_grad (bool, optional): If autograd should record operations on the
@@ -394,7 +395,7 @@ class ShardedTensor(ShardedTensorBase):
                 Default: ``None``
         """
         def shard_size(shard_md):
-            return reduce((lambda x, y: x * y), shard_md.shard_sizes)  # type: ignore[attr-defined]
+            return reduce(operator.mul, shard_md.shard_sizes)  # type: ignore[attr-defined]
 
         if enforce_dtype:
             warnings.warn("enforce_dtype is deprecated.  Please use dtype instead.")
@@ -436,6 +437,9 @@ class ShardedTensor(ShardedTensorBase):
 
             for shard in local_shards:
                 src = shard.tensor.flatten()
+                if src.nelement() == 0 :
+                    warnings.warn("Gathering a tensor with zero elements on rank " + str(rank))
+                    return
                 shard_offset = shard_placement[shard.metadata][1]
                 data[shard_offset: shard_offset + src.numel()].copy_(src)
 
@@ -1134,8 +1138,8 @@ class ShardedTensor(ShardedTensorBase):
             if st_instance is None and isinstance(e, ShardedTensor):
                 st_instance = e
 
-        tree_map(find_sharded_tensor, args)
-        tree_map(find_sharded_tensor, kwargs)
+        pytree.tree_map_(find_sharded_tensor, args)
+        pytree.tree_map_(find_sharded_tensor, kwargs)
 
         if st_instance is not None:
             return dispatch(st_instance, func)

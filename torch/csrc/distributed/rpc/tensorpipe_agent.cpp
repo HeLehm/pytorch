@@ -7,7 +7,9 @@
 #include <utility>
 
 #include <fmt/format.h>
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated")
 #include <tensorpipe/tensorpipe.h>
+C10_DIAGNOSTIC_POP()
 
 #include <torch/csrc/distributed/rpc/agent_utils.h>
 #include <torch/csrc/distributed/rpc/tensorpipe_utils.h>
@@ -562,10 +564,7 @@ void TensorPipeAgent::pipeRead(
       GroupMembershipLockGuard guard(groupMembershipMutex_, isStaticGroup_);
       streams = getStreamsFromPoolForDevices(devices_);
     }
-    tensorpipe::Allocation tpAllocation;
-    TensorpipeReadBuffers tpBuffers;
-    std::tie(tpAllocation, tpBuffers) =
-        tensorpipeAllocate(tpDescriptor, streams);
+    auto [tpAllocation, tpBuffers] = tensorpipeAllocate(tpDescriptor, streams);
 
     pipe->read(
         std::move(tpAllocation),
@@ -595,10 +594,7 @@ void TensorPipeAgent::pipeWrite(
     std::vector<c10::Device>&& devices,
     std::vector<c10::Stream> streams,
     std::function<void(const tensorpipe::Error&)> fn) noexcept {
-  tensorpipe::Message tpMessage;
-  TensorpipeWriteBuffers tpBuffers;
-
-  std::tie(tpMessage, tpBuffers) =
+  auto [tpMessage, tpBuffers] =
       tensorpipeSerialize(std::move(rpcMessage), std::move(devices), streams);
 
   pipe->write(
@@ -814,11 +810,15 @@ c10::intrusive_ptr<JitFuture> TensorPipeAgent::send(
       // An instance of ClientPipe cannot be copied or moved as it contains a
       // mutex, and to force in-place construction in GCC 5 we need piecewise
       // construction in order to work around an issue.
-      std::tie(it, std::ignore) = connectedPipes_.emplace(
-          std::piecewise_construct,
-          std::forward_as_tuple(toWorkerInfo.id_),
-          std::forward_as_tuple(context_->connect(
-              url, tensorpipe::PipeOptions().remoteName(toWorkerInfo.name_))));
+      it = connectedPipes_
+               .emplace(
+                   std::piecewise_construct,
+                   std::forward_as_tuple(toWorkerInfo.id_),
+                   std::forward_as_tuple(context_->connect(
+                       url,
+                       tensorpipe::PipeOptions().remoteName(
+                           toWorkerInfo.name_))))
+               .first;
     }
   }
   ClientPipe& clientPipe = it->second;

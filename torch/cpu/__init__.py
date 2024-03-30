@@ -7,18 +7,21 @@ from contextlib import AbstractContextManager
 from typing import Any, Optional, Union
 
 import torch
+
 from .. import device as _device
 from . import amp
 
 __all__ = [
     "is_available",
     "synchronize",
+    "current_device",
     "current_stream",
     "stream",
     "set_device",
     "device_count",
     "Stream",
     "StreamContext",
+    "Event",
 ]
 
 _device_t = Union[_device, str, int, None]
@@ -54,7 +57,25 @@ class Stream:
     N.B. This class only exists to facilitate device-agnostic code
     """
 
-    pass
+    def __init__(self, priority: int = -1):
+        pass
+
+    def wait_stream(self, stream) -> None:
+        pass
+
+
+class Event:
+    def query(self) -> bool:
+        return True
+
+    def record(self, stream=None):
+        pass
+
+    def synchronize(self):
+        pass
+
+    def wait(self, stream=None):
+        pass
 
 
 _default_cpu_stream = Stream()
@@ -126,3 +147,11 @@ def set_device(device: _device_t) -> None:
     N.B. This function only exists to facilitate device-agnostic code
     """
     pass
+
+
+def current_device() -> str:
+    r"""Returns current device for cpu. Always 'cpu'.
+
+    N.B. This function only exists to facilitate device-agnostic code
+    """
+    return "cpu"
