@@ -561,128 +561,193 @@ static Tensor& linalg_solve_triangular_mps_impl(const Tensor& A,
   return out;
 }
 
-static Tensor& linalg_cholesky_ex_mps_impl(const Tensor& A, bool lower, Tensor& out, const Tensor& info) {
+static void cholesky_kernel_mps(const Tensor& input, const Tensor& info, bool upper) {
   using namespace mps;
 
-  // Check preconditions
-  TORCH_CHECK(A.size(-2) == A.size(-1), "A must be square");
-  TORCH_CHECK(A.allclose(A.transpose(-2, -1)), "A must be symmetric");
-
-  // Prepare the output tensor
-  at::native::resize_output(out, A.sizes());
-  out.zero_();
-
-  if (A.numel() == 0) {
-    return out;
-  }
+  //Tensor input_ = input.is_contiguous() ? input : input.contiguous();
 
   info.zero_();
 
-  // Clone the input tensor and ensure it's contiguous
-  Tensor A_ = A.is_contiguous() ? A.clone() : A.clone(at::MemoryFormat::Contiguous);
-
-  // Calculate flattened batch size
-  int64_t batchSize = A_.dim() > 2 ? A_.numel() / (A_.size(-2) * A_.size(-1)) : 1;
-
-  // Reshape tensors to be compatible with Metal API
-  A_ = A_.reshape({batchSize, A.size(-2), A.size(-1)});
-  out = out.reshape({batchSize, A.size(-2), A.size(-1)});
-  Tensor info_flat = info.reshape({batchSize});
-
-  id<MTLBuffer> aBuffer = getMTLBufferStorage(A_);
-  id<MTLBuffer> outBuffer = getMTLBufferStorage(out);
+  auto batchSize = batchCount(input);
+  id<MTLBuffer> inputBuffer = getMTLBufferStorage(input);
+  //id<MTLBuffer> infoBuffer = getMTLBufferStorage(info);
   MPSStream* mpsStream = getCurrentMPSStream();
   id<MTLDevice> device = MPSDevice::getInstance()->device();
-
-// create a tensor for each batch element so we can save the status to it
-// NOTE This is a workaraound as I could not get
-// MPSMatrixDecompositionCholesky to write the status to a certain index in a buffer
-std:
-  vector<Tensor> stati = std::vector<Tensor>();
-  for (const auto i : c10::irange(batchSize)) {
-    Tensor status = at::zeros({1}, A.options().dtype(kInt));
-    stati.push_back(status);
-  }
 
   dispatch_sync(mpsStream->queue(), ^() {
     @autoreleasepool {
       mpsStream->endKernelCoalescing();
       id<MTLCommandBuffer> commandBuffer = mpsStream->commandBuffer();
 
-      uint64_t dim = A_.size(-2); // We know A is square
-      uint64_t elemSize = A_.element_size();
+      uint64_t dim = input.size(-2); // We know A is square
+      uint64_t elemSize = input.element_size();
 
       MPSMatrixDecompositionCholesky* filter =
-          [[[MPSMatrixDecompositionCholesky alloc] initWithDevice:device lower:lower order:dim] autorelease];
+          [[[MPSMatrixDecompositionCholesky alloc] initWithDevice:device lower:!upper order:dim] autorelease];
 
-      getMPSProfiler().beginProfileKernel(filter, " cholesky_mps", {A_});
+      getMPSProfiler().beginProfileKernel(filter, " cholesky_mps", {input});
 
       MPSMatrixDescriptor* matrixDesc = [MPSMatrixDescriptor matrixDescriptorWithRows:dim
                                                                               columns:dim
                                                                              matrices:batchSize
                                                                              rowBytes:dim * elemSize
                                                                           matrixBytes:dim * dim * elemSize
-                                                                             dataType:getMPSDataType(A_)];
+                                                                             dataType:getMPSDataType(input)];
 
-      for (const auto i : c10::irange(batchSize)) {
-        const uint64_t offset = i * dim * dim;
+      // for (const auto i : c10::irange(batchSize)) {
+      //   const uint64_t offset = i * dim * dim;
 
-        MPSMatrix* sourceMatrix = [[[MPSMatrix alloc] initWithBuffer:aBuffer
-                                                              offset:offset * elemSize
-                                                          descriptor:matrixDesc] autorelease];
+      //   MPSMatrix* sourceMatrix = [[[MPSMatrix alloc] initWithBuffer:inputBuffer
+      //                                                         offset:offset * elemSize
+      //                                                     descriptor:matrixDesc] autorelease];
 
-        MPSMatrix* solutionMatrix = [[[MPSMatrix alloc] initWithBuffer:outBuffer
-                                                                offset:offset * elemSize
-                                                            descriptor:matrixDesc] autorelease];
+      //   //id<MTLBuffer> statusBuffer = getMTLBufferStorage(stati[i]);
 
-        id<MTLBuffer> statusBuffer = getMTLBufferStorage(stati[i]);
+      //   [filter encodeToCommandBuffer:commandBuffer
+      //                    sourceMatrix:sourceMatrix
+      //                    resultMatrix:sourceMatrix
+      //                          status:nil];
+      // }
 
-        [filter encodeToCommandBuffer:commandBuffer
-                         sourceMatrix:sourceMatrix
-                         resultMatrix:solutionMatrix
-                               status:statusBuffer];
-      }
+      MPSMatrix* sourceMatrix = [[[MPSMatrix alloc] initWithBuffer:inputBuffer
+                                                            offset:0
+                                                        descriptor:matrixDesc] autorelease];
+                                                
+      [filter encodeToCommandBuffer:commandBuffer
+                      sourceMatrix:sourceMatrix
+                      resultMatrix:sourceMatrix
+                            status:nil];
+
       getMPSProfiler().endProfileKernel(filter);
     }
   });
 
-  // Check the status buffers for errors
-  for (const auto i : c10::irange(batchSize)) {
-    Tensor status = stati[i];
-    int status_val = status.item<int>();
+  // copy data back to the original tensor
+  //input.copy_(input_);
 
-    if (status_val != 0) {
-      Tensor out_diagonal = out[i].diag();
-      Tensor input_diagonal = A_[i].diag();
-      Tensor diff = out_diagonal.sub(input_diagonal).abs();
 
-      int64_t fail_dim;
 
-      if (diff.nonzero().numel() > 0) {
-        fail_dim = diff.nonzero().min().item<int64_t>();
-      } else {
-        fail_dim = diff.numel() - 1;
-      }
+//   // Check preconditions
+//   TORCH_CHECK(A.size(-2) == A.size(-1), "A must be square");
+//   TORCH_CHECK(A.allclose(A.transpose(-2, -1)), "A must be symmetric");
 
-      info_flat[i] = fail_dim + 1;
+  
+//   // make usre the output tensor is contiguous
+//   Tensor A_ = A.is_contiguous() ? A : A.contiguous();
+//   out = at::empty_like(A_, A_.options()).zero_();
+//   info.zero_();
 
-      // NOTE we could break here because the error only shows the 1st failure anyway
-    }
-  }
+//   if (A.numel() == 0) {
+//     return out;
+//   }
 
-  // Restore the original shape of the tensors
-  out = out.reshape(A.sizes());
-  info.copy_(info_flat.reshape(info.sizes()));
+//   // Calculate flattened batch size
+//   auto batchSize = batchCount(A_);
 
-  // Set the unnecessary triangle to zero based on the 'lower' parameter
-  if (lower) {
-    out.tril_(0);
-  } else {
-    out.triu_(0);
-  }
+//   //Tensor info_flat = info.reshape({batchSize});
 
-  return out;
+
+//   id<MTLBuffer> aBuffer = getMTLBufferStorage(A_);
+//   id<MTLBuffer> outBuffer = getMTLBufferStorage(out);
+//   MPSStream* mpsStream = getCurrentMPSStream();
+//   id<MTLDevice> device = MPSDevice::getInstance()->device();
+
+//   // print weather the buffers are nil
+//   //NSLog(@"aBuffer: %@", aBuffer == nil ? @"nil" : @"not nil");
+//   //NSLog(@"outBuffer: %@", outBuffer == nil ? @"nil" : @"not nil");
+
+
+// // create a tensor for each batch element so we can save the status to it
+// // NOTE This is a workaraound as I could not get
+// // MPSMatrixDecompositionCholesky to write the status to a certain index in a buffer
+// // std:
+// //   vector<Tensor> stati = std::vector<Tensor>();
+// //   for (const auto i : c10::irange(batchSize)) {
+// //     Tensor status = at::zeros({1}, A.options().dtype(kInt));
+// //     stati.push_back(status);
+// //   }
+
+//   dispatch_sync(mpsStream->queue(), ^() {
+//     @autoreleasepool {
+//       mpsStream->endKernelCoalescing();
+//       id<MTLCommandBuffer> commandBuffer = mpsStream->commandBuffer();
+
+//       uint64_t dim = A_.size(-2); // We know A is square
+//       uint64_t elemSize = A_.element_size();
+
+//       MPSMatrixDecompositionCholesky* filter =
+//           [[[MPSMatrixDecompositionCholesky alloc] initWithDevice:device lower:lower order:dim] autorelease];
+
+//       getMPSProfiler().beginProfileKernel(filter, " cholesky_mps", {A_});
+
+//       MPSMatrixDescriptor* matrixDesc = [MPSMatrixDescriptor matrixDescriptorWithRows:dim
+//                                                                               columns:dim
+//                                                                              matrices:batchSize
+//                                                                              rowBytes:dim * elemSize
+//                                                                           matrixBytes:dim * dim * elemSize
+//                                                                              dataType:getMPSDataType(A_)];
+
+//       for (const auto i : c10::irange(batchSize)) {
+//         const uint64_t offset = i * dim * dim;
+
+//         MPSMatrix* sourceMatrix = [[[MPSMatrix alloc] initWithBuffer:aBuffer
+//                                                               offset:offset * elemSize
+//                                                           descriptor:matrixDesc] autorelease];
+
+//         MPSMatrix* solutionMatrix = [[[MPSMatrix alloc] initWithBuffer:outBuffer
+//                                                                 offset:offset * elemSize
+//                                                             descriptor:matrixDesc] autorelease];
+
+//         //id<MTLBuffer> statusBuffer = getMTLBufferStorage(stati[i]);
+
+//         [filter encodeToCommandBuffer:commandBuffer
+//                          sourceMatrix:sourceMatrix
+//                          resultMatrix:solutionMatrix
+//                                status:nil];
+//       }
+//       getMPSProfiler().endProfileKernel(filter);
+//     }
+//   });
+
+//   // Check the status buffers for errors
+//   // for (const auto i : c10::irange(batchSize)) {
+//   //   Tensor status = stati[i];
+//   //   int status_val = status.item<int>();
+
+//   //   if (status_val != 0) {
+//   //     Tensor out_diagonal = out[i].diag();
+//   //     Tensor input_diagonal = A_[i].diag();
+//   //     Tensor diff = out_diagonal.sub(input_diagonal).abs();
+
+//   //     int64_t fail_dim;
+
+//   //     if (diff.nonzero().numel() > 0) {
+//   //       fail_dim = diff.nonzero().min().item<int64_t>();
+//   //     } else {
+//   //       fail_dim = diff.numel() - 1;
+//   //     }
+
+//   //     info_flat[i] = fail_dim + 1;
+
+//   //     // NOTE we could break here because the error only shows the 1st failure anyway
+//   //   }
+//   // }
+
+//   // Restore the original shape of the tensors
+//   //out = out.reshape(A.sizes());
+//   //info.copy_(info_flat.reshape(info.sizes()));
+
+//   // Set the unnecessary triangle to zero based on the 'lower' parameter
+//   if (lower) {
+//     out.tril_(0);
+//   } else {
+//     out.triu_(0);
+//   }
+
+//   return out;
 }
+
+REGISTER_MPS_DISPATCH(cholesky_stub, &cholesky_kernel_mps);
 
 } // namespace mps
 
@@ -886,15 +951,5 @@ TORCH_IMPL_FUNC(triangular_solve_mps_out)
   result.resize_(out.sizes());
   result.copy_(out);
 }
-
-static void cholesky_kernel_mps(const Tensor& input, const Tensor& info, bool upper) {
-  // out = copy input
-  Tensor out = at::empty({0}, input.scalar_type(), c10::nullopt, kMPS, c10::nullopt, MemoryFormat::Contiguous);
-  mps::linalg_cholesky_ex_mps_impl(input, !upper, out, info);
-  // copy into input
-  input.copy_(out);
-}
-
-REGISTER_MPS_DISPATCH(cholesky_stub, &cholesky_kernel_mps);
 
 } // namespace at::native
