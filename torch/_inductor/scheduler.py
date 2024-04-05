@@ -1556,6 +1556,9 @@ class Scheduler:
             if name in V.graph.graph_inputs:
                 add_user(name, OutputNode(StarDep(name)))
                 V.graph.mutated_inputs.add(name)
+            elif name in V.graph.constants:
+                # In AOTI, module parameters and buffers are not lifted as graph inputs
+                add_user(name, OutputNode(StarDep(name)))
 
         inp_names = {
             name: index for index, name in enumerate(V.graph.graph_inputs.keys())
@@ -1683,7 +1686,9 @@ class Scheduler:
         for i in range(10):
             old_len = len(self.nodes)
             fusion_log.debug(
-                "===== attempting fusion (%d/10): %d nodes =====", i + 1, old_len
+                "===== attempting fusion (%d/10): %d nodes =====",
+                i + 1,
+                old_len,
             )
             self.fuse_nodes_once()
             new_len = len(self.nodes)
@@ -1971,6 +1976,9 @@ class Scheduler:
             for node_grouping in group_grouping.values():
                 check_all_pairs(node_grouping)
 
+        possible_fusions = self.get_possible_fusions_with_highest_priority(
+            possible_fusions
+        )
         possible_fusions.sort(key=self.score_fusion_key, reverse=True)
         fusion_log.debug("found %d possible fusions", len(possible_fusions))
         return possible_fusions
@@ -2226,6 +2234,36 @@ class Scheduler:
         }
         return sum(dep.numbytes_hint() for dep in common_memory_deps)
 
+    def get_possible_fusions_with_highest_priority(self, possible_fusions):
+        # Group the possible fusions based on their priority from the backend.
+        # Only return the group of possible fusions with highest priority.
+        if len(possible_fusions) == 0:
+            return possible_fusions
+        possible_fusions_group_by_priority: Dict[
+            int, List[Tuple["BaseSchedulerNode", "BaseSchedulerNode"]]
+        ] = {}
+
+        for node1, node2 in possible_fusions:
+            assert node1.get_device() == node2.get_device()
+            device = node1.get_device()
+            fusion_pair_priority = int(
+                self.get_backend(device).get_fusion_pair_priority(node1, node2)
+            )
+            if fusion_pair_priority not in possible_fusions_group_by_priority:
+                possible_fusions_group_by_priority[fusion_pair_priority] = [
+                    (node1, node2),
+                ]
+            else:
+                possible_fusions_group_by_priority[fusion_pair_priority].append(
+                    (node1, node2)
+                )
+        # Sorted by fusion_pair_priority and return the possible fusions with highest priority
+        possible_fusions_with_highest_priority = sorted(
+            possible_fusions_group_by_priority.items(), key=lambda item: item[0]
+        )[0][1]
+        assert len(possible_fusions_with_highest_priority) > 0
+        return possible_fusions_with_highest_priority
+
     def score_fusion_key(self, nodes):
         """
         Shim for list.sort(key=...)
@@ -2426,7 +2464,7 @@ class Scheduler:
             elif node.is_foreach():
                 self.get_backend(device).codegen_foreach(node)  # type: ignore[possibly-undefined]
             elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
-                self.get_backend(device).codegen_nodes(node.get_nodes())  # type: ignore[possibly-undefined]
+                self.get_backend(device).codegen_node(node)  # type: ignore[possibly-undefined]
             else:
                 assert isinstance(node, NopKernelSchedulerNode)
                 node.allocate()
@@ -2451,9 +2489,18 @@ class Scheduler:
 
         self.flush()
 
-    def get_buffer_layout(self, buf_name: str) -> ir.Layout:
+    def is_unaligned_buffer(self, buf_name):
+        if buf_name in V.graph.graph_inputs:
+            return not config.assume_aligned_inputs
+        if buf_name in V.graph.constants:
+            # all constants are assumed to be aligned
+            return False
         node = self.name_to_node[buf_name]
-        return node.node.get_layout()
+        layout = node.node.get_layout()
+        if isinstance(layout, ir.NonOwningLayout):
+            return not layout.maybe_guard_aligned()
+        else:
+            return False
 
 
 class BaseScheduling:
@@ -2495,7 +2542,7 @@ class BaseScheduling:
         """
         raise NotImplementedError()
 
-    def codegen_nodes(self, nodes: List[SchedulerNode]):
+    def codegen_node(self, node: Union[FusedSchedulerNode, SchedulerNode]):
         """
         Generate a kernel given a list of pre-fused nodes.
         """
@@ -2526,3 +2573,10 @@ class BaseScheduling:
         in milliseconds on randomly generated inputs.
         """
         raise NotImplementedError()
+
+    def get_fusion_pair_priority(self, node1, node2) -> int:
+        """
+        Return an unsigned integer which represents the priority of this fusion pair.
+        The smaller is with higher priority.
+        """
+        return 0
